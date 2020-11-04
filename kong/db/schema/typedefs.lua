@@ -98,6 +98,18 @@ local function validate_name(name)
 end
 
 
+local function validate_utf8_name(name)
+
+  if not utils.validate_utf8(name) then
+    return nil,
+    "invalid value '" .. name ..
+      "': invalid utf-8 character sequence detected"
+  end
+
+  return true
+end
+
+
 local function validate_sni(host)
   local res, err_or_port = utils.normalize_ip(host)
   if type(err_or_port) == "string" and err_or_port ~= "invalid port number" then
@@ -320,6 +332,13 @@ typedefs.name = Schema.define {
   type = "string",
   unique = true,
   custom_validator = validate_name
+}
+
+
+typedefs.utf8_name = Schema.define {
+  type = "string",
+  unique = true,
+  custom_validator = validate_utf8_name
 }
 
 
