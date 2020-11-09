@@ -3,6 +3,7 @@ local semaphore = require "ngx.semaphore"
 
 local ngx = ngx
 local kong = kong
+local math = math
 local type = type
 local pcall = pcall
 local string = string
@@ -52,6 +53,9 @@ local function job_thread(self, index)
         ok, err = job()
         self.time[tail][3] = ngx.now() * 1000
         self.running = self.running - 1
+        if self.counter < QUEUE_SIZE then
+          self.counter = self.counter + 1
+        end
         if not ok then
           self.errored = self.errored + 1
           kong.log.err("async thread #", index, " job error: ", err)
@@ -241,6 +245,7 @@ function async.new()
     running = 0,
     errored = 0,
     refused = 0,
+    counter = 0,
     head = 0,
     tail = 0,
   }, async)
@@ -314,6 +319,36 @@ function async:every(delay, func, ...)
   bucket.jobs[bucket.head] = create_recurring_job(create_job(func, ...))
 
   return true
+end
+
+
+---
+-- Kong async raw metrics data
+--
+-- @tparam  from[opt]  data start time (from unix epoch)
+-- @tparam  to[opt]    data end time (from unix epoch)
+-- @treturn table      a table containing the metrics
+-- @treturn number     number of metrics returned
+function async:data(from, to)
+  local time = self.time
+  local counter = self.counter
+  if not from and not to then
+    return time, counter
+  end
+
+  from = from and from * 1000 or 0
+  to   = to   and to   * 1000 or math.huge
+
+  local filtered = kong.table.new(counter, 0)
+  local count = 0
+  for i = 1, self.counter do
+    if time[i][1] >= from and time[i][3] <= to then
+      count = count + 1
+      filtered[count] = time[i]
+    end
+  end
+
+  return filtered, count
 end
 
 
