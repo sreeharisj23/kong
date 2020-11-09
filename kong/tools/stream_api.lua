@@ -20,7 +20,7 @@ function stream_api.load_handlers()
   for plugin_name in pairs(kong.configuration.loaded_plugins) do
     local loaded, custom_endpoints = utils.load_module_if_exists("kong.plugins." .. plugin_name .. ".api")
     if loaded and custom_endpoints._stream then
-      ngx.log(ngx.DEBUG, "Register stream api for plugin: ", plugin_name)
+      kong.log.debug("Register stream api for plugin: ", plugin_name)
       _handlers[plugin_name] = custom_endpoints._stream
       custom_endpoints._stream = nil
     end
@@ -28,6 +28,14 @@ function stream_api.load_handlers()
 end
 
 function stream_api.request(key, data, socket_path)
+  if type(key) ~= "string" or type(data) ~= "string" then
+    kong.log.error("Key and data must be strings")
+    return
+  end
+  if #data > 8000 then
+    kong.log.error("too much data")
+  end
+
   local socket = assert(ngx.socket.udp())
   assert(socket:setpeername(socket_path or "unix:" .. PREFIX .. "/stream_rpc.sock"))
 
@@ -44,7 +52,7 @@ function stream_api.request(key, data, socket_path)
   end
 
   local _, status, payload = st_unpack(data, "=SP")
-  if status == 0 then
+  if status ~= 0 then
     socket:close()
     return nil, payload
   end
@@ -55,7 +63,6 @@ end
 
 
 function stream_api.handle()
-
   local socket = ngx.req.socket()
   local data, err = socket:receive()
   if not data then
@@ -67,7 +74,7 @@ function stream_api.handle()
 
   local f = _handlers[key]
   if not f then
-    socket:send(st_pack("=SP", 0, "no handler"))
+    socket:send(st_pack("=SP", 1, "no handler"))
     return
   end
 
@@ -75,11 +82,18 @@ function stream_api.handle()
   res, err = f(payload)
   if not res then
     kong.log.error(st_format("stream_api handler %q returned error: %q", key, err))
-    socket:send(st_pack("=SP", 0, tostring(err)))
+    socket:send(st_pack("=SP", 2, tostring(err)))
     return
   end
 
-  socket:send(st_pack("=SP", 1, tostring(res)))
+  res = tostring(res)
+  if #res > 8000 then
+    kong.log.warn(st_format(
+      "stram_api handler %q response is %d bytes.  Might be truncated",
+      key, #res))
+  end
+
+  socket:send(st_pack("=SP", 0, tostring(res)))
 end
 
 
