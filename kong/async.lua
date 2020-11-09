@@ -6,6 +6,7 @@ local kong = kong
 local math = math
 local type = type
 local pcall = pcall
+local table = table
 local string = string
 local select = select
 local unpack = unpack
@@ -221,6 +222,129 @@ local function create_recurring_job(job)
 end
 
 
+local function get_stats(self, from, to)
+  local data, count = self:data(from, to)
+
+  local max_latency
+  local min_latency
+  local mean_latency
+  local median_latency
+  local p95_latency
+  local p99_latency
+  local max_runtime
+  local min_runtime
+  local mean_runtime
+  local median_runtime
+  local p95_runtime
+  local p99_runtime
+
+  if count == 1 then
+    local queued  = data[1][1]
+    local started = data[1][2]
+    local ended   = data[1][3]
+
+    local latency = started - queued
+    local runtime = ended - started
+
+    max_latency    = latency
+    min_latency    = latency
+    mean_latency   = latency
+    median_latency = latency
+    p95_latency    = latency
+    p99_latency    = latency
+    max_runtime    = runtime
+    min_runtime    = runtime
+    mean_runtime   = runtime
+    median_runtime = runtime
+    p95_runtime    = runtime
+    p99_runtime    = runtime
+
+  elseif count > 1 then
+    local tot_latency = 0
+    local tot_runtime = 0
+
+    local latencies = kong.table.new(count, 0)
+    local runtimes  = kong.table.new(count, 0)
+
+    for i = 1, count do
+      local queued  = data[i][1]
+      local started = data[i][2]
+      local ended   = data[i][3]
+
+      local latency = started - queued
+      tot_latency   = latency + tot_latency
+      latencies[i]  = latency
+      max_latency   = math.max(latency, max_latency or latency)
+      min_latency   = math.min(latency, min_latency or latency)
+
+      local runtime = ended - started
+      tot_runtime   = runtime + tot_runtime
+      runtimes[i]   = runtime
+      max_runtime   = math.max(runtime, max_runtime or runtime)
+      min_runtime   = math.min(runtime, min_runtime or runtime)
+    end
+
+    mean_latency = math.floor(tot_latency / count + 0.5)
+    mean_runtime = math.floor(tot_runtime / count + 0.5)
+
+    table.sort(latencies)
+    table.sort(runtimes)
+
+    local median_index = count / 2
+    local p95_index = 0.95 * count
+    local p99_index = 0.99 * count
+
+    if median_index == math.floor(median_index) then
+      median_latency = math.floor((latencies[median_index] + latencies[median_index + 1]) / 2 + 0.5)
+      median_runtime = math.floor(( runtimes[median_index] +  runtimes[median_index + 1]) / 2 + 0.5)
+    else
+      median_index = math.floor(median_index + 0.5)
+      median_latency = latencies[median_index]
+      median_runtime = runtimes[median_index]
+    end
+
+    if p95_index == math.floor(p95_index) then
+      p95_latency = math.floor((latencies[p95_index] + latencies[p95_index + 1]) / 2 + 0.5)
+      p95_runtime = math.floor(( runtimes[p95_index] +  runtimes[p95_index + 1]) / 2 + 0.5)
+
+    else
+      p95_index   = math.floor(p95_index + 0.5)
+      p95_latency = latencies[p95_index]
+      p95_runtime = runtimes[p95_index]
+    end
+
+    if p99_index == math.floor(p99_index) then
+      p99_latency = math.floor((latencies[p99_index] + latencies[p99_index + 1]) / 2 + 0.5)
+      p99_runtime = math.floor(( runtimes[p99_index] +  runtimes[p99_index + 1]) / 2 + 0.5)
+
+    else
+      p99_index   = math.floor(p99_index + 0.5)
+      p99_latency = latencies[p99_index]
+      p99_runtime = runtimes[p99_index]
+    end
+  end
+
+  return {
+    latency = {
+      mean   = mean_latency   or 0,
+      median = median_latency or 0,
+      p95    = p95_latency    or 0,
+      p99    = p99_latency    or 0,
+      max    = max_latency    or 0,
+      min    = min_latency    or 0,
+    },
+    runtime = {
+      mean   = mean_runtime   or 0,
+      median = median_runtime or 0,
+      p95    = p95_runtime    or 0,
+      p99    = p99_runtime    or 0,
+      max    = max_runtime    or 0,
+      min    = min_runtime    or 0,
+    },
+  }
+end
+
+
 local async = {}
 
 
@@ -349,6 +473,50 @@ function async:data(from, to)
   end
 
   return filtered, count
+end
+
+
+---
+-- Return statistics
+--
+-- @tparam  opts[opt] data start time (from unix epoch)
+-- @treturn table     a table containing calculated statistics
+function async:stats(opts)
+  local stats
+  local pending = get_pending(self)
+  if not opts then
+    stats = get_stats(self)
+    stats.pending  = pending
+    stats.running  = self.running
+    stats.errored  = self.errored
+    stats.refused  = self.refused
+
+  else
+    local now = ngx.now()
+
+    local all    = opts.all    and get_stats(self)
+    local minute = opts.minute and get_stats(self, now - 60)
+    local hour   = opts.hour   and get_stats(self, now - 3600)
+
+    stats = {
+      pending  = pending,
+      running  = self.running,
+      errored  = self.errored,
+      refused  = self.refused,
+      latency  = {
+        all    = all.latency,
+        hour   = hour.latency,
+        minute = minute.latency,
+      },
+      runtime  = {
+        all    = all.runtime,
+        hour   = hour.runtime,
+        minute = minute.runtime,
+      },
+    }
+  end
+
+  return stats
 end
 
 
